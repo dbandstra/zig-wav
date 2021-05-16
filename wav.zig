@@ -39,7 +39,7 @@ pub fn Loader(comptime Reader: type, comptime verbose: bool) type {
 
         fn preloadError(comptime message: []const u8) !PreloadedInfo {
             if (verbose) {
-                std.debug.warn("{}\n", .{message});
+                std.debug.warn("{s}\n", .{message});
             }
             return error.WavLoadFailed;
         }
