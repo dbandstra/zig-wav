@@ -37,6 +37,16 @@ pub fn Loader(comptime Reader: type, comptime verbose: bool) type {
             return quad;
         }
 
+        fn toIdentifier(reader: *Reader, id: [4]u8) !void {
+            while (true) {
+                const quad = try readIdentifier(reader);
+                if (std.mem.eql(u8, &quad, &id))
+                    return;
+                const size = try reader.readIntLittle(u32);
+                try reader.skipBytes(size, .{});
+            }
+        }
+
         fn preloadError(comptime message: []const u8) !PreloadedInfo {
             if (verbose) {
                 std.debug.warn("{s}\n", .{message});
@@ -97,10 +107,10 @@ pub fn Loader(comptime Reader: type, comptime verbose: bool) type {
             }
 
             // read "data" sub-chunk header
-            const subchunk2_id = try readIdentifier(reader);
-            if (!std.mem.eql(u8, &subchunk2_id, "data")) {
-                return preloadError("missing \"data\" header");
-            }
+            toIdentifier(reader, "data".*) catch |e| switch (e) {
+                error.EndOfStream => return preloadError("missing \"data\" header"),
+                else => return e,
+            };
             const subchunk2_size = try reader.readIntLittle(u32);
             if ((subchunk2_size % (num_channels * bytes_per_sample)) != 0) {
                 return preloadError("invalid subchunk2_size");
