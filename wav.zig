@@ -27,114 +27,113 @@ pub const PreloadedInfo = struct {
     }
 };
 
-// verbose is comptime so we can avoid using std.debug.warn which doesn't
-// exist on some targets (e.g. wasm)
-pub fn Loader(comptime Reader: type, comptime verbose: bool) type {
-    return struct {
-        fn readIdentifier(reader: *Reader) ![4]u8 {
-            var quad: [4]u8 = undefined;
-            try reader.readNoEof(&quad);
-            return quad;
-        }
+fn readIdentifier(reader: anytype) ![4]u8 {
+    var quad: [4]u8 = undefined;
+    try reader.readNoEof(&quad);
+    return quad;
+}
 
-        fn toIdentifier(reader: *Reader, id: [4]u8) !void {
-            while (true) {
-                const quad = try readIdentifier(reader);
-                if (std.mem.eql(u8, &quad, &id))
-                    return;
-                const size = try reader.readIntLittle(u32);
-                try reader.skipBytes(size, .{});
-            }
-        }
+fn toIdentifier(reader: anytype, id: [4]u8) !void {
+    while (true) {
+        const quad = try readIdentifier(reader);
+        if (std.mem.eql(u8, &quad, &id))
+            return;
+        const size = try reader.readIntLittle(u32);
+        try reader.skipBytes(size, .{});
+    }
+}
 
-        fn preloadError(comptime message: []const u8) !PreloadedInfo {
-            if (verbose) {
-                std.debug.warn("{s}\n", .{message});
-            }
+pub fn preload(reader: anytype) !PreloadedInfo {
+    // read RIFF chunk descriptor (12 bytes)
+    const chunk_id = try readIdentifier(reader);
+    if (!std.mem.eql(u8, &chunk_id, "RIFF")) {
+        std.log.debug("wav: missing \"RIFF\" header", .{});
+        return error.WavLoadFailed;
+    }
+    try reader.skipBytes(4, .{}); // ignore chunk_size
+    const format_id = try readIdentifier(reader);
+    if (!std.mem.eql(u8, &format_id, "WAVE")) {
+        std.log.debug("wav: missing \"WAVE\" identifier", .{});
+        return error.WavLoadFailed;
+    }
+
+    // read "fmt" sub-chunk
+    const subchunk1_id = try readIdentifier(reader);
+    if (!std.mem.eql(u8, &subchunk1_id, "fmt ")) {
+        std.log.debug("wav: missing \"fmt \" header", .{});
+        return error.WavLoadFailed;
+    }
+    const subchunk1_size = try reader.readIntLittle(u32);
+    if (subchunk1_size != 16) {
+        std.log.debug("wav: not PCM (subchunk1_size != 16)", .{});
+        return error.WavLoadFailed;
+    }
+    const audio_format = try reader.readIntLittle(u16);
+    if (audio_format != 1) {
+        std.log.debug("wav: not integer PCM (audio_format != 1)", .{});
+        return error.WavLoadFailed;
+    }
+    const num_channels = try reader.readIntLittle(u16);
+    const sample_rate = try reader.readIntLittle(u32);
+    const byte_rate = try reader.readIntLittle(u32);
+    const block_align = try reader.readIntLittle(u16);
+    const bits_per_sample = try reader.readIntLittle(u16);
+
+    if (num_channels < 1 or num_channels > 16) {
+        std.log.debug("wav: invalid number of channels", .{});
+        return error.WavLoadFailed;
+    }
+    if (sample_rate < 1 or sample_rate > 192000) {
+        std.log.debug("wav: invalid sample_rate", .{});
+        return error.WavLoadFailed;
+    }
+    const format: Format = switch (bits_per_sample) {
+        8 => .unsigned8,
+        16 => .signed16_lsb,
+        24 => .signed24_lsb,
+        32 => .signed32_lsb,
+        else => {
+            std.log.debug("wav: invalid number of bits per sample", .{});
             return error.WavLoadFailed;
-        }
-
-        pub fn preload(reader: *Reader) !PreloadedInfo {
-            // read RIFF chunk descriptor (12 bytes)
-            const chunk_id = try readIdentifier(reader);
-            if (!std.mem.eql(u8, &chunk_id, "RIFF")) {
-                return preloadError("missing \"RIFF\" header");
-            }
-            try reader.skipBytes(4, .{}); // ignore chunk_size
-            const format_id = try readIdentifier(reader);
-            if (!std.mem.eql(u8, &format_id, "WAVE")) {
-                return preloadError("missing \"WAVE\" identifier");
-            }
-
-            // read "fmt" sub-chunk
-            const subchunk1_id = try readIdentifier(reader);
-            if (!std.mem.eql(u8, &subchunk1_id, "fmt ")) {
-                return preloadError("missing \"fmt \" header");
-            }
-            const subchunk1_size = try reader.readIntLittle(u32);
-            if (subchunk1_size != 16) {
-                return preloadError("not PCM (subchunk1_size != 16)");
-            }
-            const audio_format = try reader.readIntLittle(u16);
-            if (audio_format != 1) {
-                return preloadError("not integer PCM (audio_format != 1)");
-            }
-            const num_channels = try reader.readIntLittle(u16);
-            const sample_rate = try reader.readIntLittle(u32);
-            const byte_rate = try reader.readIntLittle(u32);
-            const block_align = try reader.readIntLittle(u16);
-            const bits_per_sample = try reader.readIntLittle(u16);
-
-            if (num_channels < 1 or num_channels > 16) {
-                return preloadError("invalid number of channels");
-            }
-            if (sample_rate < 1 or sample_rate > 192000) {
-                return preloadError("invalid sample_rate");
-            }
-            const format: Format = switch (bits_per_sample) {
-                8 => .unsigned8,
-                16 => .signed16_lsb,
-                24 => .signed24_lsb,
-                32 => .signed32_lsb,
-                else => return preloadError("invalid number of bits per sample"),
-            };
-            const bytes_per_sample = format.getNumBytes();
-            if (byte_rate != sample_rate * num_channels * bytes_per_sample) {
-                return preloadError("invalid byte_rate");
-            }
-            if (block_align != num_channels * bytes_per_sample) {
-                return preloadError("invalid block_align");
-            }
-
-            // read "data" sub-chunk header
-            toIdentifier(reader, "data".*) catch |e| switch (e) {
-                error.EndOfStream => return preloadError("missing \"data\" header"),
-                else => return e,
-            };
-            const subchunk2_size = try reader.readIntLittle(u32);
-            if ((subchunk2_size % (num_channels * bytes_per_sample)) != 0) {
-                return preloadError("invalid subchunk2_size");
-            }
-            const num_samples = subchunk2_size / (num_channels * bytes_per_sample);
-
-            return PreloadedInfo{
-                .num_channels = num_channels,
-                .sample_rate = sample_rate,
-                .format = format,
-                .num_samples = num_samples,
-            };
-        }
-
-        pub fn load(
-            reader: *Reader,
-            preloaded: PreloadedInfo,
-            out_buffer: []u8,
-        ) !void {
-            const num_bytes = preloaded.getNumBytes();
-            std.debug.assert(out_buffer.len >= num_bytes);
-            try reader.readNoEof(out_buffer[0..num_bytes]);
-        }
+        },
     };
+    const bytes_per_sample = format.getNumBytes();
+    if (byte_rate != sample_rate * num_channels * bytes_per_sample) {
+        std.log.debug("wav: invalid byte_rate", .{});
+        return error.WavLoadFailed;
+    }
+    if (block_align != num_channels * bytes_per_sample) {
+        std.log.debug("wav: invalid block_align", .{});
+        return error.WavLoadFailed;
+    }
+
+    // read "data" sub-chunk header
+    toIdentifier(reader, "data".*) catch |e| switch (e) {
+        error.EndOfStream => {
+            std.log.debug("wav: missing \"data\" header", .{});
+            return error.WavLoadFailed;
+        },
+        else => return e,
+    };
+    const subchunk2_size = try reader.readIntLittle(u32);
+    if ((subchunk2_size % (num_channels * bytes_per_sample)) != 0) {
+        std.log.debug("wav: invalid subchunk2_size", .{});
+        return error.WavLoadFailed;
+    }
+    const num_samples = subchunk2_size / (num_channels * bytes_per_sample);
+
+    return PreloadedInfo{
+        .num_channels = num_channels,
+        .sample_rate = sample_rate,
+        .format = format,
+        .num_samples = num_samples,
+    };
+}
+
+pub fn load(reader: anytype, preloaded: PreloadedInfo, out_buffer: []u8) !void {
+    const num_bytes = preloaded.getNumBytes();
+    std.debug.assert(out_buffer.len >= num_bytes);
+    try reader.readNoEof(out_buffer[0..num_bytes]);
 }
 
 pub const SaveInfo = struct {
@@ -143,69 +142,65 @@ pub const SaveInfo = struct {
     format: Format,
 };
 
-pub fn Saver(comptime Writer: type) type {
-    const data_chunk_pos: u32 = 36; // location of "data" header
+const data_chunk_pos: u32 = 36; // location of "data" header
 
-    return struct {
-        fn writeHelper(writer: Writer, info: SaveInfo, maybe_data: ?[]const u8) !void {
-            const bytes_per_sample = info.format.getNumBytes();
+fn writeHelper(writer: anytype, info: SaveInfo, maybe_data: ?[]const u8) !void {
+    const bytes_per_sample = info.format.getNumBytes();
 
-            const num_channels = try std.math.cast(u16, info.num_channels);
-            const sample_rate = try std.math.cast(u32, info.sample_rate);
-            const byte_rate = sample_rate * @as(u32, num_channels) * bytes_per_sample;
-            const block_align: u16 = num_channels * bytes_per_sample;
-            const bits_per_sample: u16 = bytes_per_sample * 8;
-            const data_len = if (maybe_data) |data| try std.math.cast(u32, data.len) else 0;
+    const num_channels = try std.math.cast(u16, info.num_channels);
+    const sample_rate = try std.math.cast(u32, info.sample_rate);
+    const byte_rate = sample_rate * @as(u32, num_channels) * bytes_per_sample;
+    const block_align: u16 = num_channels * bytes_per_sample;
+    const bits_per_sample: u16 = bytes_per_sample * 8;
+    const data_len = if (maybe_data) |data| try std.math.cast(u32, data.len) else 0;
 
-            try writer.writeAll("RIFF");
-            if (maybe_data != null) {
-                try writer.writeIntLittle(u32, data_chunk_pos + 8 + data_len - 8);
-            } else {
-                try writer.writeIntLittle(u32, 0);
-            }
-            try writer.writeAll("WAVE");
+    try writer.writeAll("RIFF");
+    if (maybe_data != null) {
+        try writer.writeIntLittle(u32, data_chunk_pos + 8 + data_len - 8);
+    } else {
+        try writer.writeIntLittle(u32, 0);
+    }
+    try writer.writeAll("WAVE");
 
-            try writer.writeAll("fmt ");
-            try writer.writeIntLittle(u32, 16); // PCM
-            try writer.writeIntLittle(u16, 1); // uncompressed
-            try writer.writeIntLittle(u16, num_channels);
-            try writer.writeIntLittle(u32, sample_rate);
-            try writer.writeIntLittle(u32, byte_rate);
-            try writer.writeIntLittle(u16, block_align);
-            try writer.writeIntLittle(u16, bits_per_sample);
+    try writer.writeAll("fmt ");
+    try writer.writeIntLittle(u32, 16); // PCM
+    try writer.writeIntLittle(u16, 1); // uncompressed
+    try writer.writeIntLittle(u16, num_channels);
+    try writer.writeIntLittle(u32, sample_rate);
+    try writer.writeIntLittle(u32, byte_rate);
+    try writer.writeIntLittle(u16, block_align);
+    try writer.writeIntLittle(u16, bits_per_sample);
 
-            try writer.writeAll("data");
-            if (maybe_data) |data| {
-                try writer.writeIntLittle(u32, data_len);
-                try writer.writeAll(data);
-            } else {
-                try writer.writeIntLittle(u32, 0);
-            }
-        }
+    try writer.writeAll("data");
+    if (maybe_data) |data| {
+        try writer.writeIntLittle(u32, data_len);
+        try writer.writeAll(data);
+    } else {
+        try writer.writeIntLittle(u32, 0);
+    }
+}
 
-        // write wav header with placeholder values for length. use this when
-        // you are going to stream to the wav file and won't know the length
-        // till you are done.
-        pub fn writeHeader(writer: Writer, info: SaveInfo) !void {
-            try writeHelper(writer, info, null);
-        }
+// write wav header with placeholder values for length. use this when
+// you are going to stream to the wav file and won't know the length
+// till you are done.
+pub fn writeHeader(writer: anytype, info: SaveInfo) !void {
+    try writeHelper(writer, info, null);
+}
 
-        // after streaming, call this to seek back and patch the wav header
-        // with length values.
-        pub fn patchHeader(writer: Writer, seeker: anytype, data_len: usize) !void {
-            const data_len_u32 = try std.math.cast(u32, data_len);
+// after streaming, call this to seek back and patch the wav header
+// with length values.
+pub fn patchHeader(writer: anytype, seeker: anytype, data_len: usize) !void {
+    const data_len_u32 = try std.math.cast(u32, data_len);
 
-            try seeker.seekTo(4);
-            try writer.writeIntLittle(u32, data_chunk_pos + 8 + data_len_u32 - 8);
-            try seeker.seekTo(data_chunk_pos + 4);
-            try writer.writeIntLittle(u32, data_len_u32);
-        }
+    try seeker.seekTo(4);
+    try writer.writeIntLittle(u32, data_chunk_pos + 8 + data_len_u32 - 8);
+    try seeker.seekTo(data_chunk_pos + 4);
+    try writer.writeIntLittle(u32, data_len_u32);
+}
 
-        // save a prepared wav (header and data) in one shot.
-        pub fn save(writer: Writer, data: []const u8, info: SaveInfo) !void {
-            try writeHelper(writer, info, data);
-        }
-    };
+// save a prepared wav (header and data) in one shot.
+pub fn save(writer: anytype, data: []const u8, info: SaveInfo) !void {
+    try writeHelper(writer, info, data);
 }
 
 test "basic coverage (loading)" {
@@ -224,9 +219,10 @@ test "basic coverage (loading)" {
         0x00, 0x00, 0x00, 0xFF, 0xFF, 0x03, 0x00, 0xFC, 0xFF, 0x03, 0x00,
     };
 
-    var reader = std.io.fixedBufferStream(&null_wav).reader();
-    const MyLoader = Loader(@TypeOf(reader), true);
-    const preloaded = try MyLoader.preload(&reader);
+    var fbs = std.io.fixedBufferStream(&null_wav);
+    var reader = fbs.reader();
+
+    const preloaded = try preload(reader);
 
     try std.testing.expectEqual(@as(usize, 1), preloaded.num_channels);
     try std.testing.expectEqual(@as(usize, 44100), preloaded.sample_rate);
@@ -234,13 +230,15 @@ test "basic coverage (loading)" {
     try std.testing.expectEqual(@as(usize, 44), preloaded.num_samples);
 
     var buffer: [88]u8 = undefined;
-    try MyLoader.load(&reader, preloaded, &buffer);
+    try load(reader, preloaded, &buffer);
+
+    try std.testing.expectEqualSlices(u8, null_wav[44..132], &buffer);
 }
 
 test "basic coverage (saving)" {
     var buffer: [1000]u8 = undefined;
     var writer = std.io.fixedBufferStream(&buffer).writer();
-    try Saver(@TypeOf(writer)).save(writer, &[_]u8{ 0, 0, 0, 0, 0, 0, 0, 0 }, .{
+    try save(writer, &[_]u8{ 0, 0, 0, 0, 0, 0, 0, 0 }, .{
         .num_channels = 1,
         .sample_rate = 44100,
         .format = .signed16_lsb,
@@ -253,9 +251,7 @@ test "basic coverage (streaming out)" {
     var buffer: [1000]u8 = undefined;
     var fbs = std.io.fixedBufferStream(&buffer);
 
-    const MySaver = Saver(@TypeOf(fbs).Writer);
-
-    try MySaver.writeHeader(fbs.writer(), .{
+    try writeHeader(fbs.writer(), .{
         .num_channels = 1,
         .sample_rate = 44100,
         .format = .signed16_lsb,
@@ -269,7 +265,7 @@ test "basic coverage (streaming out)" {
     try fbs.writer().writeAll(data);
     try std.testing.expectEqual(@as(u64, 52), try fbs.getPos());
 
-    try MySaver.patchHeader(fbs.writer(), fbs.seekableStream(), data.len);
+    try patchHeader(fbs.writer(), fbs.seekableStream(), data.len);
     try std.testing.expectEqual(@as(u32, 44), std.mem.readIntLittle(u32, buffer[4..8]));
     try std.testing.expectEqual(@as(u32, 8), std.mem.readIntLittle(u32, buffer[40..44]));
 }
