@@ -228,10 +228,10 @@ test "basic coverage (loading)" {
     const MyLoader = Loader(@TypeOf(reader), true);
     const preloaded = try MyLoader.preload(&reader);
 
-    std.testing.expectEqual(@as(usize, 1), preloaded.num_channels);
-    std.testing.expectEqual(@as(usize, 44100), preloaded.sample_rate);
-    std.testing.expectEqual(@as(Format, .signed16_lsb), preloaded.format);
-    std.testing.expectEqual(@as(usize, 44), preloaded.num_samples);
+    try std.testing.expectEqual(@as(usize, 1), preloaded.num_channels);
+    try std.testing.expectEqual(@as(usize, 44100), preloaded.sample_rate);
+    try std.testing.expectEqual(@as(Format, .signed16_lsb), preloaded.format);
+    try std.testing.expectEqual(@as(usize, 44), preloaded.num_samples);
 
     var buffer: [88]u8 = undefined;
     try MyLoader.load(&reader, preloaded, &buffer);
@@ -246,7 +246,7 @@ test "basic coverage (saving)" {
         .format = .signed16_lsb,
     });
 
-    std.testing.expectEqualSlices(u8, "RIFF", buffer[0..4]);
+    try std.testing.expectEqualSlices(u8, "RIFF", buffer[0..4]);
 }
 
 test "basic coverage (streaming out)" {
@@ -260,16 +260,16 @@ test "basic coverage (streaming out)" {
         .sample_rate = 44100,
         .format = .signed16_lsb,
     });
-    std.testing.expectEqual(@as(u64, 44), try fbs.getPos());
-    std.testing.expectEqual(@as(u32, 0), std.mem.readIntLittle(u32, buffer[4..8]));
-    std.testing.expectEqual(@as(u32, 0), std.mem.readIntLittle(u32, buffer[40..44]));
+    try std.testing.expectEqual(@as(u64, 44), try fbs.getPos());
+    try std.testing.expectEqual(@as(u32, 0), std.mem.readIntLittle(u32, buffer[4..8]));
+    try std.testing.expectEqual(@as(u32, 0), std.mem.readIntLittle(u32, buffer[40..44]));
 
     const data = &[_]u8{ 0, 0, 0, 0, 0, 0, 0, 0 };
 
     try fbs.writer().writeAll(data);
-    std.testing.expectEqual(@as(u64, 52), try fbs.getPos());
+    try std.testing.expectEqual(@as(u64, 52), try fbs.getPos());
 
     try MySaver.patchHeader(fbs.writer(), fbs.seekableStream(), data.len);
-    std.testing.expectEqual(@as(u32, 44), std.mem.readIntLittle(u32, buffer[4..8]));
-    std.testing.expectEqual(@as(u32, 8), std.mem.readIntLittle(u32, buffer[40..44]));
+    try std.testing.expectEqual(@as(u32, 44), std.mem.readIntLittle(u32, buffer[4..8]));
+    try std.testing.expectEqual(@as(u32, 8), std.mem.readIntLittle(u32, buffer[40..44]));
 }
