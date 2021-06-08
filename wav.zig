@@ -1,5 +1,7 @@
 const std = @import("std");
 
+const log = std.log.scoped(.wav);
+
 pub const Format = enum {
     unsigned8,
     signed16_lsb,
@@ -47,30 +49,30 @@ pub fn preload(reader: anytype) !PreloadedInfo {
     // read RIFF chunk descriptor (12 bytes)
     const chunk_id = try readIdentifier(reader);
     if (!std.mem.eql(u8, &chunk_id, "RIFF")) {
-        std.log.debug("wav: missing \"RIFF\" header", .{});
+        log.warn("preload: missing \"RIFF\" header", .{});
         return error.WavLoadFailed;
     }
     try reader.skipBytes(4, .{}); // ignore chunk_size
     const format_id = try readIdentifier(reader);
     if (!std.mem.eql(u8, &format_id, "WAVE")) {
-        std.log.debug("wav: missing \"WAVE\" identifier", .{});
+        log.warn("preload: missing \"WAVE\" identifier", .{});
         return error.WavLoadFailed;
     }
 
     // read "fmt" sub-chunk
     const subchunk1_id = try readIdentifier(reader);
     if (!std.mem.eql(u8, &subchunk1_id, "fmt ")) {
-        std.log.debug("wav: missing \"fmt \" header", .{});
+        log.warn("preload: missing \"fmt \" header", .{});
         return error.WavLoadFailed;
     }
     const subchunk1_size = try reader.readIntLittle(u32);
     if (subchunk1_size != 16) {
-        std.log.debug("wav: not PCM (subchunk1_size != 16)", .{});
+        log.warn("preload: not PCM (subchunk1_size != 16)", .{});
         return error.WavLoadFailed;
     }
     const audio_format = try reader.readIntLittle(u16);
     if (audio_format != 1) {
-        std.log.debug("wav: not integer PCM (audio_format != 1)", .{});
+        log.warn("preload: not integer PCM (audio_format != 1)", .{});
         return error.WavLoadFailed;
     }
     const num_channels = try reader.readIntLittle(u16);
@@ -80,11 +82,11 @@ pub fn preload(reader: anytype) !PreloadedInfo {
     const bits_per_sample = try reader.readIntLittle(u16);
 
     if (num_channels < 1 or num_channels > 16) {
-        std.log.debug("wav: invalid number of channels", .{});
+        log.warn("preload: invalid number of channels", .{});
         return error.WavLoadFailed;
     }
     if (sample_rate < 1 or sample_rate > 192000) {
-        std.log.debug("wav: invalid sample_rate", .{});
+        log.warn("preload: invalid sample_rate", .{});
         return error.WavLoadFailed;
     }
     const format: Format = switch (bits_per_sample) {
@@ -93,31 +95,31 @@ pub fn preload(reader: anytype) !PreloadedInfo {
         24 => .signed24_lsb,
         32 => .signed32_lsb,
         else => {
-            std.log.debug("wav: invalid number of bits per sample", .{});
+            log.warn("preload: invalid number of bits per sample", .{});
             return error.WavLoadFailed;
         },
     };
     const bytes_per_sample = format.getNumBytes();
     if (byte_rate != sample_rate * num_channels * bytes_per_sample) {
-        std.log.debug("wav: invalid byte_rate", .{});
+        log.warn("preload: invalid byte_rate", .{});
         return error.WavLoadFailed;
     }
     if (block_align != num_channels * bytes_per_sample) {
-        std.log.debug("wav: invalid block_align", .{});
+        log.warn("preload: invalid block_align", .{});
         return error.WavLoadFailed;
     }
 
     // read "data" sub-chunk header
     toIdentifier(reader, "data".*) catch |e| switch (e) {
         error.EndOfStream => {
-            std.log.debug("wav: missing \"data\" header", .{});
+            log.warn("preload: missing \"data\" header", .{});
             return error.WavLoadFailed;
         },
         else => return e,
     };
     const subchunk2_size = try reader.readIntLittle(u32);
     if ((subchunk2_size % (num_channels * bytes_per_sample)) != 0) {
-        std.log.debug("wav: invalid subchunk2_size", .{});
+        log.warn("preload: invalid subchunk2_size", .{});
         return error.WavLoadFailed;
     }
     const num_samples = subchunk2_size / (num_channels * bytes_per_sample);
