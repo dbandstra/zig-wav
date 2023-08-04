@@ -149,12 +149,12 @@ const data_chunk_pos: u32 = 36; // location of "data" header
 fn writeHelper(writer: anytype, info: SaveInfo, maybe_data: ?[]const u8) !void {
     const bytes_per_sample = info.format.getNumBytes();
 
-    const num_channels = try std.math.cast(u16, info.num_channels);
-    const sample_rate = try std.math.cast(u32, info.sample_rate);
+    const num_channels = std.math.cast(u16, info.num_channels) orelse return error.WavWriteFailed;
+    const sample_rate = std.math.cast(u32, info.sample_rate) orelse return error.WavWriteFailed;
     const byte_rate = sample_rate * @as(u32, num_channels) * bytes_per_sample;
     const block_align: u16 = num_channels * bytes_per_sample;
     const bits_per_sample: u16 = bytes_per_sample * 8;
-    const data_len = if (maybe_data) |data| try std.math.cast(u32, data.len) else 0;
+    const data_len = if (maybe_data) |data| (std.math.cast(u32, data.len) orelse return error.WavWriteFailed) else 0;
 
     try writer.writeAll("RIFF");
     if (maybe_data != null) {
@@ -192,7 +192,7 @@ pub fn writeHeader(writer: anytype, info: SaveInfo) !void {
 // after streaming, call this to seek back and patch the wav header
 // with length values.
 pub fn patchHeader(writer: anytype, seeker: anytype, data_len: usize) !void {
-    const data_len_u32 = try std.math.cast(u32, data_len);
+    const data_len_u32 = std.math.cast(u32, data_len) orelse return error.WavWriteFailed;
 
     try seeker.seekTo(4);
     try writer.writeIntLittle(u32, data_chunk_pos + 8 + data_len_u32 - 8);
@@ -239,8 +239,9 @@ test "basic coverage (loading)" {
 
 test "basic coverage (saving)" {
     var buffer: [1000]u8 = undefined;
-    var writer = std.io.fixedBufferStream(&buffer).writer();
-    try save(writer, &[_]u8{ 0, 0, 0, 0, 0, 0, 0, 0 }, .{
+    var fbs = std.io.fixedBufferStream(&buffer);
+
+    try save(fbs.writer(), &[_]u8{ 0, 0, 0, 0, 0, 0, 0, 0 }, .{
         .num_channels = 1,
         .sample_rate = 44100,
         .format = .signed16_lsb,
